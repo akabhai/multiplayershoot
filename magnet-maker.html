@@ -1,1 +1,33 @@
-
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Magnet Link Generator</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        body { overflow: auto; background: #111; }
+        .container { max-width: 600px; margin: 50px auto; }
+        textarea { width: 100%; height: 100px; background: #222; border: 1px solid #444; color: #0f0; margin-top: 10px;}
+    </style>
+</head>
+<body>
+    <div class="container glass-panel">
+        <h2>MAGNET MAKER</h2>
+        <div class="input-group">
+            <label>Room Name</label>
+            <input type="text" id="room-name" value="AlphaSector">
+        </div>
+        <div class="input-group">
+            <label>Region</label>
+            <input type="text" id="region" value="US-EAST">
+        </div>
+        <button class="neon-btn" id="gen-btn">Generate Magnet Link</button>
+        
+        <br><br>
+        <label>Share this Link:</label>
+        <textarea id="output" readonly></textarea>
+        <button class="neon-btn" id="copy-btn" style="margin-top:10px; padding: 10px 20px; font-size:12px;">Copy</button>
+    </div>
+    <script src="magnet-maker.js"></script>
+</body>
+</html>
