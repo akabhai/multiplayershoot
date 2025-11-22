@@ -3,50 +3,48 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>AETHER: Magnet Arena</title>
+    <title>AETHER: 2.5D Arena</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-    <!-- Loading / Menu Screen -->
     <div id="ui-layer">
         <div id="main-menu" class="glass-panel">
-            <h1>AETHER <span>ARENA</span></h1>
-            <div class="magnet-info" id="room-display">Checking Magnet Link...</div>
+            <h1>AETHER <span>DIMENSION</span></h1>
+            <div class="magnet-info" id="room-display">Initializing Magnet...</div>
             
             <div class="input-group">
-                <label>Callsign</label>
-                <input type="text" id="player-name" placeholder="Hero Name" value="Ronin">
+                <input type="text" id="player-name" placeholder="Pilot Callsign" value="Viper">
             </div>
 
             <div class="hero-select">
-                <button class="hero-btn active" data-hero="vanguard">Vanguard</button>
-                <button class="hero-btn" data-hero="wraith">Wraith</button>
-                <button class="hero-btn" data-hero="titan">Titan</button>
+                <div class="hero-card active" data-hero="titan">
+                    <div class="hero-icon titan"></div>
+                    <span>TITAN</span>
+                </div>
+                <div class="hero-card" data-hero="wraith">
+                    <div class="hero-icon wraith"></div>
+                    <span>WRAITH</span>
+                </div>
             </div>
 
-            <button id="btn-start" class="neon-btn">ENTER ARENA</button>
-            <br><br>
-            <small>Streamer Mode: <input type="checkbox" id="streamer-mode"></small>
+            <button id="btn-start" class="neon-btn">DEPLOY</button>
         </div>
 
-        <!-- HUD -->
         <div id="hud" style="display:none;">
             <div class="top-bar">
                 <div class="score-board">
-                    <div class="team-blue">0</div>
-                    <div class="timer">∞</div>
-                    <div class="team-red">0</div>
+                    <span class="team-blue">BLUE 0</span>
+                    <span class="timer">∞</span>
+                    <span class="team-red">RED 0</span>
                 </div>
-                <div id="fps-counter">FPS: 60 | PING: 0ms</div>
-            </div>
-
-            <div class="minimap-container">
-                <canvas id="minimap"></canvas>
+                <div id="fps-counter">60 FPS</div>
             </div>
 
             <div class="status-bars">
+                <div class="bar-label">INTEGRITY</div>
                 <div class="bar-container"><div id="hp-bar" class="fill hp"></div></div>
+                <div class="bar-label">ENERGY</div>
                 <div class="bar-container"><div id="mana-bar" class="fill mana"></div></div>
             </div>
 
@@ -54,7 +52,6 @@
                 <div class="skill" id="skill-1">Q</div>
                 <div class="skill" id="skill-2">W</div>
                 <div class="skill" id="skill-3">E</div>
-                <div class="skill" id="skill-4">SPACE</div>
             </div>
             
             <div id="messages"></div>
@@ -63,7 +60,6 @@
 
     <canvas id="gameCanvas"></canvas>
 
-    <!-- Scripts -->
     <script src="magnet-room.js"></script>
     <script src="network.js"></script>
     <script src="game.js"></script>
