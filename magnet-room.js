@@ -1,48 +1,68 @@
 class MagnetRoom {
     constructor() {
-        this.currentRoomId = null;
-        this.parseMagnet();
+        this.roomId = null;
+        this.region = "GLOBAL-1";
+        
+        // Initialize on load
+        this.resolveConnection();
     }
 
-    parseMagnet() {
-        // Check URL hash for room ID
-        // Format: #magnet:?xt=urn:arena:<RoomID>&pk=<Key>
+    resolveConnection() {
+        // Parse the URL Hash for Magnet Links
+        // Format: index.html#magnet:?xt=urn:arena:<ID>&rg=<REGION>
         const hash = window.location.hash;
         
         if (hash.startsWith('#magnet:')) {
-            const params = new URLSearchParams(hash.substring(8));
-            const xt = params.get('xt'); // urn:arena:12345
+            this.connectToExisting(hash);
+        } else {
+            this.createNewSector();
+        }
+    }
+
+    connectToExisting(hash) {
+        try {
+            // Parse parameters manually to avoid server dependencies
+            const queryString = hash.substring(8); // Remove '#magnet:'
+            const params = new URLSearchParams(queryString);
             
-            if (xt && xt.startsWith('urn:arena:')) {
-                this.currentRoomId = xt.split(':')[2];
-                document.getElementById('room-display').innerText = `Linked to Sector: ${this.currentRoomId}`;
-                return;
+            const urn = params.get('xt');
+            const region = params.get('rg');
+            
+            if (urn && urn.startsWith('urn:arena:')) {
+                this.roomId = urn.split(':')[2];
+                this.region = region || "UNKNOWN";
+                console.log(`[NET] Locking on to Sector: ${this.roomId}`);
+            } else {
+                throw new Error("Invalid URN");
             }
+        } catch (e) {
+            console.warn("[NET] Magnet Link Corrupt. Re-routing...");
+            this.createNewSector();
         }
-
-        // No room found? Generate a new shard
-        this.createNewShard();
     }
 
-    createNewShard() {
-        // Shard ID based on Date + Random (Simulating a unique region)
-        const shardId = 'shard_' + Math.floor(Math.random() * 9999);
-        this.currentRoomId = shardId;
+    createNewSector() {
+        // Generate a new Cryptographic ID for the lobby
+        const array = new Uint8Array(6);
+        window.crypto.getRandomValues(array);
+        const hexId = Array.from(array).map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
         
-        // Update URL without reload
-        const magnetLink = `#magnet:?xt=urn:arena:${shardId}`;
-        history.replaceState(null, null, magnetLink);
+        this.roomId = hexId;
+        this.region = this.detectRegion();
         
-        document.getElementById('room-display').innerText = `Hosting Sector: ${shardId}`;
+        // Update the Browser URL without reloading
+        const newLink = `#magnet:?xt=urn:arena:${this.roomId}&rg=${this.region}`;
+        window.history.replaceState(null, null, newLink);
+        
+        console.log(`[NET] Sector Initialized: ${this.roomId}`);
     }
 
-    checkOccupancy() {
-        // In a real mesh, we would ask connected peers how many people are in the mesh.
-        // If > 4, we generate a next-link and redirect new connections.
-        const playerCount = 1; // Placeholder
-        if (playerCount >= 4) {
-            return false; // Room full
-        }
-        return true;
+    detectRegion() {
+        // Heuristic region detection based on Timezone
+        const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        if (tz.includes("New_York") || tz.includes("Los_Angeles")) return "US-NORTH";
+        if (tz.includes("London") || tz.includes("Berlin")) return "EU-WEST";
+        if (tz.includes("Tokyo") || tz.includes("Shanghai")) return "ASIA-EAST";
+        return "GLOBAL-1";
     }
 }
