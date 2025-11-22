@@ -1,54 +1,46 @@
-// 2.5D ENGINE CONSTANTS
-const BLOCK_SIZE = 60;
-const MAP_W = 30;
-const MAP_H = 30;
+// --- ENGINE CONFIG ---
+const TILE_SIZE = 100;
+const WORLD_SIZE = 4000; 
+const VIEW_DIST = 1400;
 
 class Game {
     constructor() {
         this.canvas = document.getElementById('gameCanvas');
-        this.ctx = this.canvas.getContext('2d');
-        this.camera = { x: 0, y: 0, zoom: 1 };
-        this.keys = {};
-        this.mouse = { x: 0, y: 0 };
+        this.ctx = this.canvas.getContext('2d', { alpha: false }); // Optimization
         
-        this.renderList = []; // The Z-buffer array
-        this.entities = [];
+        this.lastTime = 0;
+        this.camera = { x: 0, y: 0, zoom: 1 };
+        this.shake = 0;
+
+        this.input = { keys: {}, mouse: { x: 0, y: 0, down: false } };
+        
+        // Game State
+        this.localPlayer = null;
+        this.entities = []; // Players + Bots
+        this.mapObjects = []; // Walls, Trees, Loot
         this.projectiles = [];
         this.particles = [];
-        this.mapBlocks = [];
         
-        this.localPlayer = null;
+        this.zone = { x: WORLD_SIZE/2, y: WORLD_SIZE/2, radius: WORLD_SIZE, targetRadius: 500, time: 300 };
+        
         this.network = new NetworkManager(this);
         this.magnet = new MagnetRoom();
         
-        this.init();
-    }
-
-    init() {
+        this.initInput();
         this.resize();
         window.addEventListener('resize', () => this.resize());
-        window.addEventListener('keydown', e => this.keys[e.code] = true);
-        window.addEventListener('keyup', e => this.keys[e.code] = false);
-        window.addEventListener('mousemove', e => {
-            this.mouse.x = e.clientX;
-            this.mouse.y = e.clientY;
-        });
-        window.addEventListener('mousedown', () => {
-            if(this.localPlayer) this.localPlayer.attack(this);
-        });
 
-        document.getElementById('btn-start').onclick = () => this.startGame();
-        
-        // Select Hero Logic
-        document.querySelectorAll('.hero-card').forEach(c => {
+        // UI Hooks
+        document.getElementById('btn-deploy').onclick = () => this.deploy();
+        document.querySelectorAll('.class-card').forEach(c => {
             c.onclick = () => {
-                document.querySelectorAll('.hero-card').forEach(x => x.classList.remove('active'));
+                document.querySelectorAll('.class-card').forEach(x => x.classList.remove('active'));
                 c.classList.add('active');
-            }
+            };
         });
-
-        this.generateMap();
-        this.loop(0);
+        
+        // Start Loop
+        requestAnimationFrame(t => this.loop(t));
     }
 
     resize() {
@@ -56,432 +48,284 @@ class Game {
         this.canvas.height = window.innerHeight;
     }
 
+    initInput() {
+        window.addEventListener('keydown', e => {
+            this.input.keys[e.code] = true;
+            if(e.code === 'KeyF') this.tryInteract();
+            if(e.code === 'Digit1') this.localPlayer?.switchWeapon(0);
+            if(e.code === 'Digit2') this.localPlayer?.switchWeapon(1);
+            if(e.code === 'KeyR') this.localPlayer?.reload();
+        });
+        window.addEventListener('keyup', e => this.input.keys[e.code] = false);
+        window.addEventListener('mousemove', e => {
+            this.input.mouse.x = e.clientX;
+            this.input.mouse.y = e.clientY;
+        });
+        window.addEventListener('mousedown', () => this.input.mouse.down = true);
+        window.addEventListener('mouseup', () => this.input.mouse.down = false);
+    }
+
+    deploy() {
+        const name = document.getElementById('player-name').value || 'Survivor';
+        const cls = document.querySelector('.class-card.active').dataset.class;
+        
+        document.getElementById('lobby-screen').style.display = 'none';
+        document.getElementById('hud').style.display = 'block';
+
+        // Spawn in random safe location
+        const sx = 500 + Math.random() * (WORLD_SIZE - 1000);
+        const sy = 500 + Math.random() * (WORLD_SIZE - 1000);
+
+        this.localPlayer = new Player(sx, sy, name, cls, true);
+        this.entities.push(this.localPlayer);
+
+        // Generate World around player (Procedural)
+        this.generateMap();
+
+        // Connect to Network Simulation
+        this.network.connect(this.magnet.roomId, this.localPlayer);
+    }
+
     generateMap() {
-        // Generate a procedural arena with pillars
-        for(let x=0; x<MAP_W; x++) {
-            for(let y=0; y<MAP_H; y++) {
-                // Edges
-                if(x===0 || x===MAP_W-1 || y===0 || y===MAP_H-1) {
-                    this.mapBlocks.push(new Block(x*BLOCK_SIZE, y*BLOCK_SIZE, 80, '#333'));
-                }
-                // Random Pillars
-                else if(Math.random() < 0.05) {
-                    const h = 40 + Math.random() * 60;
-                    this.mapBlocks.push(new Block(x*BLOCK_SIZE, y*BLOCK_SIZE, h, '#445'));
-                }
+        // 1. Grid of Trees
+        for(let i=0; i<300; i++) {
+            this.mapObjects.push(new Tree(Math.random()*WORLD_SIZE, Math.random()*WORLD_SIZE));
+        }
+        // 2. Buildings (Clusters)
+        const towns = [{x:1000,y:1000}, {x:3000,y:3000}, {x:2000,y:2000}];
+        towns.forEach(t => {
+            for(let j=0; j<6; j++) {
+                const bx = t.x + (Math.random()-0.5)*600;
+                const by = t.y + (Math.random()-0.5)*600;
+                this.mapObjects.push(new Building(bx, by, 150, 150));
+                // Spawn Loot inside
+                if(Math.random()>0.3) this.mapObjects.push(new Loot(bx+50, by+50, this.getRandomLoot()));
+            }
+        });
+    }
+
+    getRandomLoot() {
+        const pool = ['ak47', 'm416', 'shotgun', 'sniper', 'medkit', 'shield'];
+        return pool[Math.floor(Math.random()*pool.length)];
+    }
+
+    tryInteract() {
+        if(!this.localPlayer || this.localPlayer.dead) return;
+        // Find nearest loot
+        let nearest = null, dist = 80;
+        this.mapObjects.forEach((obj, i) => {
+            if(obj instanceof Loot) {
+                const d = Math.hypot(obj.x - this.localPlayer.x, obj.y - this.localPlayer.y);
+                if(d < dist) { dist = d; nearest = i; }
+            }
+        });
+
+        if(nearest !== null) {
+            const loot = this.mapObjects[nearest];
+            if(this.localPlayer.pickup(loot.type)) {
+                this.mapObjects.splice(nearest, 1);
             }
         }
     }
 
-    startGame() {
-        const name = document.getElementById('player-name').value;
-        const type = document.querySelector('.hero-card.active').dataset.hero;
-        document.getElementById('main-menu').style.display = 'none';
-        document.getElementById('hud').style.display = 'block';
-
-        // Spawn Center
-        const cx = (MAP_W * BLOCK_SIZE) / 2;
-        const cy = (MAP_H * BLOCK_SIZE) / 2;
-        
-        this.localPlayer = new Player(cx, cy, name, type, true);
-        this.entities.push(this.localPlayer);
-        this.network.connect(this.magnet.currentRoomId, this.localPlayer);
-    }
-
     loop(ts) {
-        const dt = Math.min((ts - (this.lastTime||ts))/1000, 0.1);
+        const dt = Math.min((ts - this.lastTime) / 1000, 0.1);
         this.lastTime = ts;
 
         if(this.localPlayer) {
             this.update(dt);
             this.render();
         }
+
         requestAnimationFrame(t => this.loop(t));
     }
 
     update(dt) {
-        // Player Input
+        // Zone Logic
+        this.zone.time -= dt;
+        if(this.zone.time <= 0 && this.zone.radius > this.zone.targetRadius) {
+            this.zone.radius -= 15 * dt;
+        }
+        // Update Entities
+        this.entities.forEach(e => e.update(dt, this));
+        this.projectiles.forEach((p,i) => {
+            p.update(dt);
+            if(p.remove) this.projectiles.splice(i, 1);
+        });
+        this.particles.forEach((p,i) => {
+            p.update(dt);
+            if(p.life <= 0) this.particles.splice(i, 1);
+        });
+        
+        // Network Sync
+        this.network.update(dt);
+
+        // Camera Follow
         if(this.localPlayer) {
-            let dx=0, dy=0;
-            if(this.keys['KeyW']) dy = -1;
-            if(this.keys['KeyS']) dy = 1;
-            if(this.keys['KeyA']) dx = -1;
-            if(this.keys['KeyD']) dx = 1;
-            
-            this.localPlayer.move(dx, dy, dt, this.mapBlocks);
-            
-            // Camera Follow (Smooth)
+            // Screen shake decay
+            if(this.shake > 0) this.shake *= 0.9;
+            const shakeX = (Math.random()-0.5)*this.shake;
+            const shakeY = (Math.random()-0.5)*this.shake;
+
             this.camera.x += (this.localPlayer.x - this.canvas.width/2 - this.camera.x) * 0.1;
             this.camera.y += (this.localPlayer.y - this.canvas.height/2 - this.camera.y) * 0.1;
+            
+            // Zone Damage
+            const d = Math.hypot(this.localPlayer.x - this.zone.x, this.localPlayer.y - this.zone.y);
+            if(d > this.zone.radius) this.localPlayer.takeDamage(10*dt);
         }
 
-        // Entities
-        this.entities.forEach(e => e.update(dt));
-        this.network.update(dt); // Bot simulation
-        
-        // Projectiles
-        for(let i=this.projectiles.length-1; i>=0; i--) {
-            let p = this.projectiles[i];
-            p.update(dt);
-            if(p.life <= 0) this.projectiles.splice(i, 1);
-        }
-
-        // Particles
-        for(let i=this.particles.length-1; i>=0; i--) {
-            this.particles[i].update(dt);
-            if(this.particles[i].life <= 0) this.particles.splice(i, 1);
-        }
+        // Update UI Strings
+        document.getElementById('zone-timer').innerText = Math.max(0, Math.ceil(this.zone.time)) + "s";
     }
 
     render() {
         const ctx = this.ctx;
-        // Clear & Background
-        ctx.fillStyle = '#0a0b10';
+        // Background
+        ctx.fillStyle = '#1a1e16'; // Dark Earth
         ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
 
         ctx.save();
-        // Camera Transform
+        // Camera Translate
         ctx.translate(-Math.floor(this.camera.x), -Math.floor(this.camera.y));
+        
+        // Draw Grid (Terrain Detail)
+        this.drawTerrain(ctx);
 
-        // Draw Grid Floor
-        this.drawFloor(ctx);
-
-        // 1. COLLECT RENDERABLES
-        // We put everything into a list to sort by Y (Depth)
-        this.renderList = [];
-
-        // Blocks
-        this.mapBlocks.forEach(b => {
-            // Culling: Only draw if on screen
-            if(this.isOnScreen(b.x, b.y, BLOCK_SIZE)) {
-                this.renderList.push({ type: 'block', obj: b, y: b.y + BLOCK_SIZE, z: 0 });
-            }
+        // --- RENDER SORTING (Z-BUFFER) ---
+        // We mix players, trees, walls, and loot into one list and sort by Y
+        const renderList = [];
+        
+        // 1. Map Objects
+        this.mapObjects.forEach(o => {
+            if(this.inView(o)) renderList.push({ type: 'obj', z: o.y + (o.h||0), obj: o });
         });
-
-        // Entities
+        // 2. Entities
         this.entities.forEach(e => {
-            this.renderList.push({ type: 'entity', obj: e, y: e.y, z: e.z });
+            renderList.push({ type: 'ent', z: e.y, obj: e });
         });
-
-        // Projectiles
+        // 3. Projectiles
         this.projectiles.forEach(p => {
-            this.renderList.push({ type: 'proj', obj: p, y: p.y, z: p.z });
+            renderList.push({ type: 'proj', z: p.y, obj: p });
         });
 
-        // 2. DEPTH SORT
-        // Sort by Bottom Y coordinate. 
-        this.renderList.sort((a, b) => a.y - b.y);
+        renderList.sort((a,b) => a.z - b.z);
 
-        // 3. DRAW LOOP
-        this.renderList.forEach(item => {
-            if(item.type === 'block') item.obj.draw(ctx);
-            else if(item.type === 'entity') item.obj.draw(ctx);
-            else if(item.type === 'proj') item.obj.draw(ctx);
+        // Draw Shadows first
+        renderList.forEach(item => {
+            if(item.type === 'ent') this.drawShadow(ctx, item.obj);
         });
 
-        // 4. OVERLAY VFX (No depth sort needed, always on top)
-        ctx.globalCompositeOperation = 'screen';
+        // Draw Objects
+        renderList.forEach(item => {
+            item.obj.draw(ctx);
+        });
+
+        // Particles (On Top)
+        ctx.globalCompositeOperation = 'screen'; // Additive blending for glow
         this.particles.forEach(p => p.draw(ctx));
         ctx.globalCompositeOperation = 'source-over';
 
-        ctx.restore();
-        
-        // UI Sync
-        if(this.localPlayer) {
-            const hpPct = (this.localPlayer.hp / this.localPlayer.maxHp)*100;
-            document.getElementById('hp-bar').style.width = `${hpPct}%`;
-        }
-    }
-
-    drawFloor(ctx) {
-        ctx.strokeStyle = '#1a1b20';
-        ctx.lineWidth = 1;
-        const startX = Math.floor(this.camera.x / BLOCK_SIZE) * BLOCK_SIZE;
-        const startY = Math.floor(this.camera.y / BLOCK_SIZE) * BLOCK_SIZE;
-        const w = this.canvas.width + BLOCK_SIZE;
-        const h = this.canvas.height + BLOCK_SIZE;
-
+        // Zone Boundary
+        ctx.strokeStyle = 'rgba(0, 243, 255, 0.5)';
+        ctx.lineWidth = 5;
         ctx.beginPath();
-        for(let x = startX; x < startX + w; x += BLOCK_SIZE) {
-            ctx.moveTo(x, startY); ctx.lineTo(x, startY+h);
-        }
-        for(let y = startY; y < startY + h; y += BLOCK_SIZE) {
-            ctx.moveTo(startX, y); ctx.lineTo(startX+w, y);
-        }
+        ctx.arc(this.zone.x, this.zone.y, this.zone.radius, 0, Math.PI*2);
         ctx.stroke();
-    }
-    
-    isOnScreen(x, y, size) {
-        return x + size > this.camera.x && x < this.camera.x + this.canvas.width &&
-               y + size > this.camera.y && y < this.camera.y + this.canvas.height;
-    }
-}
 
-// --- 2.5D PRIMITIVES ---
+        ctx.restore();
 
-// Static Map Block
-class Block {
-    constructor(x, y, h, color) {
-        this.x = x; this.y = y;
-        this.w = BLOCK_SIZE; this.h = BLOCK_SIZE;
-        this.height = h; // Z-height
-        this.color = color;
-        
-        // Pre-calc colors for 3D effect
-        this.topColor = lighten(color, 20);
-        this.sideColor = darken(color, 20);
-        this.frontColor = color;
-    }
-
-    draw(ctx) {
-        // 2.5D Projection: y is ground level. z moves UP (negative screen y)
-        const screenX = this.x;
-        const screenY = this.y; 
-        const z = this.height;
-
-        // 1. Front Face (facing camera)
-        ctx.fillStyle = this.frontColor;
-        ctx.fillRect(screenX, screenY + this.h - z, this.w, z);
-
-        // 2. Top Face (lid)
-        ctx.fillStyle = this.topColor;
-        ctx.fillRect(screenX, screenY - z, this.w, this.h);
-        
-        // 3. Border/Detail
-        ctx.strokeStyle = 'rgba(255,255,255,0.05)';
-        ctx.strokeRect(screenX, screenY - z, this.w, this.h);
-    }
-}
-
-class Entity {
-    constructor(x, y) {
-        this.x = x; this.y = y;
-        this.z = 0; // Height from ground
-        this.vx = 0; this.vy = 0; this.vz = 0;
-        this.radius = 20;
-    }
-}
-
-class Player extends Entity {
-    constructor(x, y, name, type, isLocal) {
-        super(x, y);
-        this.name = name;
-        this.type = type; // 'titan' or 'wraith'
-        this.isLocal = isLocal;
-        this.hp = 100; this.maxHp = 100;
-        this.speed = 250;
-        this.animTimer = 0;
-    }
-
-    move(dx, dy, dt, blocks) {
-        // Simple Physics
-        if(dx||dy) {
-            const len = Math.hypot(dx, dy);
-            this.vx = (dx/len)*this.speed;
-            this.vy = (dy/len)*this.speed;
-        } else {
-            this.vx *= 0.8; this.vy *= 0.8;
+        // UI Updates (Local Player Vitals)
+        if(this.localPlayer) {
+            this.localPlayer.updateHUD();
+            this.drawMinimap();
         }
-
-        const nextX = this.x + this.vx * dt;
-        const nextY = this.y + this.vy * dt;
-
-        // Block Collision (Simple AABB)
-        if(!this.checkCollisions(nextX, this.y, blocks)) this.x = nextX;
-        if(!this.checkCollisions(this.x, nextY, blocks)) this.y = nextY;
     }
 
-    checkCollisions(x, y, blocks) {
-        // Collision simplified to bounding box center
-        for(let b of blocks) {
-            if(x > b.x && x < b.x+b.w && y > b.y && y < b.y+b.h) return true;
+    inView(obj) {
+        // Culling optimization
+        return (obj.x > this.camera.x - 200 && obj.x < this.camera.x + this.canvas.width + 200 &&
+                obj.y > this.camera.y - 200 && obj.y < this.camera.y + this.canvas.height + 200);
+    }
+
+    drawTerrain(ctx) {
+        ctx.strokeStyle = '#252b20';
+        ctx.lineWidth = 2;
+        const sx = Math.floor(this.camera.x / TILE_SIZE) * TILE_SIZE;
+        const sy = Math.floor(this.camera.y / TILE_SIZE) * TILE_SIZE;
+        
+        for(let x=sx; x<sx+this.canvas.width+TILE_SIZE; x+=TILE_SIZE) {
+            for(let y=sy; y<sy+this.canvas.height+TILE_SIZE; y+=TILE_SIZE) {
+                ctx.strokeRect(x,y,TILE_SIZE,TILE_SIZE);
+            }
         }
-        return false;
     }
 
-    update(dt) {
-        this.animTimer += dt * 5;
-    }
-
-    draw(ctx) {
-        // 2.5D Rendering of Character
-        
-        // Shadow (Ground level)
-        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    drawShadow(ctx, e) {
+        ctx.fillStyle = 'rgba(0,0,0,0.4)';
         ctx.beginPath();
-        ctx.ellipse(this.x, this.y, 15, 8, 0, 0, Math.PI*2);
+        ctx.ellipse(e.x, e.y, 20, 10, 0, 0, Math.PI*2);
         ctx.fill();
-
-        // Calculate Screen Position with "Bobbing" animation
-        const bob = Math.sin(this.animTimer) * 2;
-        const screenY = this.y - this.z - 10 - bob; 
-        
-        // Determine Color
-        const color = this.isLocal ? '#00f3ff' : '#ff0055';
-        
-        if(this.type === 'titan') {
-            // TITAN: Cube-like heavy mech
-            drawPrism(ctx, this.x - 15, screenY - 40, 30, 30, 40, color);
-        } else {
-            // WRAITH: Cylinder-like fast unit
-            drawCylinder(ctx, this.x, screenY, 12, 35, color);
-        }
-
-        // Nameplate (Floating 3D text)
-        ctx.fillStyle = '#fff';
-        ctx.font = '11px Arial';
-        ctx.textAlign = 'center';
-        ctx.fillText(this.name, this.x, screenY - 55);
-        
-        // Health
-        ctx.fillStyle = '#222';
-        ctx.fillRect(this.x - 15, screenY - 50, 30, 4);
-        ctx.fillStyle = '#0f0';
-        ctx.fillRect(this.x - 15, screenY - 50, 30 * (this.hp/this.maxHp), 4);
     }
 
-    attack(game) {
-        const p = new Projectile(this.x, this.y, this.z + 25, game.mouse.x + game.camera.x, game.mouse.y + game.camera.y, this.isLocal);
-        game.projectiles.push(p);
+    drawMinimap() {
+        const mc = document.getElementById('radar-canvas');
+        const mx = mc.getContext('2d');
+        mc.width = 160; mc.height = 160;
+        
+        // Clear
+        mx.fillStyle = '#000'; mx.fillRect(0,0,160,160);
+        
+        const scale = 160 / 2000; // View range on radar
+        const cx = 80; const cy = 80;
+
+        // Entities
+        this.entities.forEach(e => {
+            if(e === this.localPlayer || e.dead) return;
+            // Only show shooting enemies
+            if(e.shooting) {
+                const rx = (e.x - this.localPlayer.x) * scale + cx;
+                const ry = (e.y - this.localPlayer.y) * scale + cy;
+                if(rx>0 && rx<160 && ry>0 && ry<160) {
+                    mx.fillStyle = 'red'; mx.fillRect(rx-2, ry-2, 4, 4);
+                }
+            }
+        });
+
+        // Zone Arc
+        // (Simplification for radar view)
+        
+        // Self
+        mx.fillStyle = '#0ff';
+        mx.beginPath(); mx.moveTo(cx, cy-4); mx.lineTo(cx-3, cy+3); mx.lineTo(cx+3, cy+3);
+        mx.fill();
     }
 }
 
-class Projectile extends Entity {
-    constructor(x, y, z, tx, ty, own) {
-        super(x, y);
-        this.z = z;
-        const angle = Math.atan2(ty - y, tx - x);
-        this.vx = Math.cos(angle) * 600;
-        this.vy = Math.sin(angle) * 600;
-        this.life = 1.5;
-        this.owner = own;
-    }
-
-    update(dt) {
-        this.x += this.vx * dt;
-        this.y += this.vy * dt;
-        this.life -= dt;
-    }
-
-    draw(ctx) {
-        // Shadow
-        ctx.fillStyle = 'rgba(0,0,0,0.3)';
-        ctx.beginPath();
-        ctx.arc(this.x, this.y, 4, 0, Math.PI*2);
-        ctx.fill();
-
-        // Bullet (Floating)
-        const sy = this.y - this.z;
-        ctx.fillStyle = '#ffeebb';
-        ctx.shadowBlur = 10; 
-        ctx.shadowColor = '#ffaa00';
-        ctx.beginPath();
-        ctx.arc(this.x, sy, 5, 0, Math.PI*2);
-        ctx.fill();
-        ctx.shadowBlur = 0;
-    }
-}
-
-class Particle {
-    constructor(x, y, z, color) {
-        this.x=x; this.y=y; this.z=z;
-        this.vx = (Math.random()-0.5)*100;
-        this.vy = (Math.random()-0.5)*100;
-        this.vz = Math.random()*100;
-        this.life = 1.0;
-        this.color = color;
-    }
-    update(dt) {
-        this.x += this.vx*dt;
-        this.y += this.vy*dt;
-        this.z += this.vz*dt;
-        this.vz -= 200*dt; // Gravity
-        if(this.z < 0) { this.z=0; this.vx*=0.5; this.vy*=0.5; }
-        this.life -= dt;
-    }
-    draw(ctx) {
-        const sy = this.y - this.z;
-        ctx.globalAlpha = this.life;
-        ctx.fillStyle = this.color;
-        ctx.fillRect(this.x, sy, 3, 3);
-        ctx.globalAlpha = 1.0;
-    }
-}
-
-// --- RENDER HELPERS ---
-
-function drawPrism(ctx, x, y, w, h, d, color) {
-    // d = depth (height in 3d)
-    // x,y = top-left of base on screen
+// --- PRIMITIVE RENDERER (2.5D) ---
+function drawPrism(ctx, x, y, w, h, zH, color) {
+    // x,y is bottom-left corner on ground
+    // zH is height of the object
+    const roofY = y - zH; 
     
-    const topC = lighten(color, 30);
-    const sideC = darken(color, 20);
-    
-    // Front
-    ctx.fillStyle = color;
-    ctx.fillRect(x, y, w, d);
-    
-    // Top
-    ctx.fillStyle = topC;
+    // Side Face (Darker)
+    ctx.fillStyle = adjustColor(color, -40);
     ctx.beginPath();
     ctx.moveTo(x, y);
-    ctx.lineTo(x+w, y);
-    ctx.lineTo(x+w+5, y-10); // Fake perspective slant
-    ctx.lineTo(x+5, y-10);
+    ctx.lineTo(x + w, y);
+    ctx.lineTo(x + w, roofY);
+    ctx.lineTo(x, roofY);
     ctx.fill();
-    
-    // Side
-    ctx.fillStyle = sideC;
-    ctx.beginPath();
-    ctx.moveTo(x+w, y);
-    ctx.lineTo(x+w+5, y-10);
-    ctx.lineTo(x+w+5, y-10+d);
-    ctx.lineTo(x+w, y+d);
-    ctx.fill();
-}
 
-function drawCylinder(ctx, x, y, r, h, color) {
-    // x, y = bottom center coords
-    // h = height upwards
-    
-    const topY = y - h;
-    
-    // Body
-    ctx.fillStyle = color;
-    ctx.fillRect(x-r, topY, r*2, h);
-    
-    // Shade Side
-    ctx.fillStyle = 'rgba(0,0,0,0.2)';
-    ctx.fillRect(x+r/2, topY, r/2, h);
-    
-    // Top Circle
-    ctx.fillStyle = lighten(color, 20);
-    ctx.beginPath();
-    ctx.ellipse(x, topY, r, r*0.4, 0, 0, Math.PI*2);
-    ctx.fill();
-    
-    // Bottom Circle Curve
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.ellipse(x, y, r, r*0.4, 0, 0, Math.PI, 0); // Half circle
-    ctx.fill();
+    // Roof Face (Lighter)
+    ctx.fillStyle = adjustColor(color, 20);
+    ctx.fillRect(x, roofY - w*0.5, w, w*0.5); // Fake perspective roof
 }
-
-function lighten(col, amt) { return adjustColor(col, amt); }
-function darken(col, amt) { return adjustColor(col, -amt); }
 
 function adjustColor(color, amount) {
-    // Very basic Hex adjuster
-    let usePound = false;
-    if (color[0] == "#") { color = color.slice(1); usePound = true; }
-    let num = parseInt(color,16);
-    let r = (num >> 16) + amount;
-    if (r > 255) r = 255; else if  (r < 0) r = 0;
-    let b = ((num >> 8) & 0x00FF) + amount;
-    if (b > 255) b = 255; else if  (b < 0) b = 0;
-    let g = (num & 0x0000FF) + amount;
-    if (g > 255) g = 255; else if  (g < 0) g = 0;
-    return (usePound?"#":"") + (g | (b << 8) | (r << 16)).toString(16).padStart(6,'0');
+    // Simple hex adjustment logic would go here
+    return color; // Placeholder
 }
 
+// Start Game
 window.onload = () => new Game();
